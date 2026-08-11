@@ -76,6 +76,66 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Run the Watcher as a Service
+
+To keep `watcher.py` running continuously in the background and automatically restart it if the VPS reboots or the process crashes, set it up as a `systemd` service on Ubuntu.
+
+Create the service file:
+
+```bash
+sudo nano /etc/systemd/system/tiktok-watcher.service
+```
+
+Paste the following configuration, updating the paths and user if needed:
+
+```ini
+[Unit]
+Description=TikTok Screenshot Watcher Service
+After=network.target pocketbase.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Projects/tiktok-screenshot-watcher
+ExecStart=/home/ubuntu/Projects/tiktok-screenshot-watcher/venv/bin/python /home/ubuntu/Projects/tiktok-screenshot-watcher/watcher.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`PYTHONUNBUFFERED=1` makes `print()` output appear immediately in the system logs.
+
+Reload systemd, enable the service, and start it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable tiktok-watcher
+sudo systemctl start tiktok-watcher
+```
+
+Check whether it is running:
+
+```bash
+sudo systemctl status tiktok-watcher
+```
+
+View live logs and watcher output:
+
+```bash
+sudo journalctl -u tiktok-watcher -f
+```
+
+Useful management commands:
+
+```bash
+sudo systemctl stop tiktok-watcher
+sudo systemctl restart tiktok-watcher
+sudo systemctl status tiktok-watcher
+```
+
 Create a local environment file from the example:
 
 ```bash
