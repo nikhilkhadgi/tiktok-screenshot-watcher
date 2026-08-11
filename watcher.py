@@ -70,7 +70,6 @@ class ScreenshotHandler(FileSystemEventHandler):
             print(f"Extracted Data: {extracted_data}")
 
             self.save_to_pocketbase(file_path, extracted_data)
-            self.archive_file(file_path)
 
         except Exception as e:
             print(f"Error processing {file_path}: {e}")
@@ -152,11 +151,6 @@ class ScreenshotHandler(FileSystemEventHandler):
         else:
             print(f"Failed to save to PocketBase: {response.text}")
 
-    def archive_file(self, file_path):
-        archive_dir = os.path.join(os.path.dirname(file_path), "archive")
-        os.makedirs(archive_dir, exist_ok=True)
-        dest_path = os.path.join(archive_dir, os.path.basename(file_path))
-        os.rename(file_path, dest_path)
 
 if __name__ == "__main__":
     os.makedirs(WATCH_DIRECTORY, exist_ok=True)
