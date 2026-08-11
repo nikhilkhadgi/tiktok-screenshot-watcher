@@ -12,6 +12,60 @@ Automates the flow from screenshot to structured record:
 - Python 3.10 or newer
 - A running PocketBase instance
 - An EvoLink API token
+- On Ubuntu/Debian VPS: `wget`, `unzip`, and `curl` installed
+
+## PocketBase on the VPS
+
+Install the base packages needed to download and run PocketBase:
+
+```bash
+sudo apt update
+sudo apt install -y wget unzip curl
+```
+
+Create a directory for PocketBase, download the binary, and make it executable:
+
+```bash
+mkdir -p ~/Projects/tiktok-pocketbase
+cd ~/Projects/tiktok-pocketbase
+wget https://github.com/pocketbase/pocketbase/releases/download/v0.39.10/pocketbase_0.39.10_linux_amd64.zip
+unzip pocketbase_0.39.10_linux_amd64.zip
+chmod +x pocketbase
+```
+
+Run PocketBase as a systemd service so it stays up after reboots:
+
+```bash
+sudo nano /etc/systemd/system/pocketbase.service
+```
+
+Paste the following service definition, adjusting the user and path if needed:
+
+```ini
+[Unit]
+Description=PocketBase Server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Projects/tiktok-pocketbase
+ExecStart=/home/ubuntu/Projects/tiktok-pocketbase/pocketbase serve --http=127.0.0.1:8090
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable pocketbase
+sudo systemctl start pocketbase
+sudo systemctl status pocketbase
+```
 
 ## Setup
 
