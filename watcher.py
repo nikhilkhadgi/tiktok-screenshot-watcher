@@ -6,6 +6,8 @@ import time
 import requests
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
+from dotenv import load_dotenv
+load_dotenv()  # Loads environment variables from .env file
 
 # Configuration
 WATCH_DIRECTORY = os.getenv("WATCH_DIRECTORY", "/home/ubuntu/Downloads/TikTok Live")
