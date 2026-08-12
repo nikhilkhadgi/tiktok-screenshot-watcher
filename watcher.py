@@ -87,7 +87,7 @@ class ScreenshotHandler(FileSystemEventHandler):
             "- 'item_number': The item text formatted strictly as 'Part <X> Item #<Y>'.\n"
             "  * Example 1: If screenshot shows '#10 Part 1', return 'Part 1 Item #10'.\n"
             "  * Example 2: If screenshot shows 'Part 2 Item 168', return 'Part 2 Item #168'.\n"
-            "- 'name': The clear product name.\n"
+            "- 'name': The clear product name. Validate if the product is real and correct it if necessary.\n"
             "- 'retail_price': Search online or from screen to find out the numeric retail price in USD as a float or string (e.g., 29.99)."
         )
 
