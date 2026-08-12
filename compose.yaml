@@ -10,6 +10,13 @@ services:
         PUID: ${PUID:-1000}
         PGID: ${PGID:-1000}
     restart: unless-stopped
+    # Docker does not rotate container logs by default. Caps total retention at
+    # max-size x max-file; older data is discarded permanently.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # Loopback only. The collection's create rule is unauthenticated, so this
     # port must never be reachable from outside the host.
     ports:
@@ -25,6 +32,12 @@ services:
         PUID: ${PUID:-1000}
         PGID: ${PGID:-1000}
     restart: unless-stopped
+    # About 400 bytes per screenshot, so 30MB holds roughly 30 shows.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       pocketbase:
         condition: service_healthy
