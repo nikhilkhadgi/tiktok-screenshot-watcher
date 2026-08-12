@@ -27,7 +27,12 @@ Edit `.env` and set two things:
 On Linux, also set `PUID`/`PGID` to the output of `id -u` and `id -g` so the
 container can read the bind-mounted folders.
 
+Create the bind-mount directories before the first start. Docker will invent any
+that are missing, but it creates them as **root**, which the container user then
+cannot write to:
+
 ```bash
+mkdir -p state pb_data
 docker compose up -d --build
 docker compose logs -f watcher
 ```
