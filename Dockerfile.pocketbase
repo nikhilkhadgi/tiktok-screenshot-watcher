@@ -1,0 +1,38 @@
+# Pinned to the version that wrote the existing pb_data. Bumping this can
+# migrate the data directory in place, so change it deliberately and back up
+# pb_data first.
+ARG PB_VERSION=0.39.10
+
+FROM alpine:3.20 AS fetch
+ARG PB_VERSION
+# Supplied by BuildKit: amd64 on the VPS, arm64 on Apple Silicon. This is why
+# the repo's local `pocketbase` binary is never copied in -- it is a macOS
+# build and cannot run in a Linux container.
+ARG TARGETARCH
+RUN apk add --no-cache ca-certificates unzip wget \
+ && wget -O /tmp/pocketbase.zip \
+      "https://github.com/pocketbase/pocketbase/releases/download/v${PB_VERSION}/pocketbase_${PB_VERSION}_linux_${TARGETARCH}.zip" \
+ && unzip /tmp/pocketbase.zip -d /pocketbase \
+ && rm /tmp/pocketbase.zip
+
+FROM alpine:3.20
+ARG PUID=1000
+ARG PGID=1000
+
+RUN apk add --no-cache ca-certificates \
+ && addgroup -g "${PGID}" pocketbase \
+ && adduser -u "${PUID}" -G pocketbase -D -H pocketbase \
+ && mkdir -p /pb_data \
+ && chown pocketbase:pocketbase /pb_data
+
+COPY --from=fetch /pocketbase/pocketbase /usr/local/bin/pocketbase
+
+USER pocketbase
+EXPOSE 8090
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
+    CMD wget -qO- http://127.0.0.1:8090/api/health || exit 1
+
+# Binds to all interfaces inside the container so the watcher service can
+# reach it. Exposure is restricted at the published port in compose.yaml.
+CMD ["pocketbase", "serve", "--http=0.0.0.0:8090", "--dir=/pb_data"]

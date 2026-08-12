@@ -1,11 +1,22 @@
+# Secrets
 .env
+
+# Python
 .venv/
 venv/
-pb_data/
-pb_migrations/
 __pycache__/
 *.pyc
-.DS_Store
-archive/
+
+# PocketBase data and generated migrations
+pb_data/
+pb_migrations/
+
+# Watcher ledger
+state/
+
+# Local macOS PocketBase binary (the container downloads its own Linux build)
 pocketbase
+
+# Editor / OS
 .vscode
+.DS_Store

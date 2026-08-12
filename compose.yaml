@@ -1,0 +1,46 @@
+name: tiktok-screenshot-watcher
+
+services:
+  pocketbase:
+    build:
+      context: .
+      dockerfile: Dockerfile.pocketbase
+      args:
+        PB_VERSION: ${PB_VERSION:-0.39.10}
+        PUID: ${PUID:-1000}
+        PGID: ${PGID:-1000}
+    restart: unless-stopped
+    # Loopback only. The collection's create rule is unauthenticated, so this
+    # port must never be reachable from outside the host.
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - ./pb_data:/pb_data
+
+  watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PUID: ${PUID:-1000}
+        PGID: ${PGID:-1000}
+    restart: unless-stopped
+    depends_on:
+      pocketbase:
+        condition: service_healthy
+    # Set explicitly rather than via env_file, so the host-oriented paths in
+    # .env cannot leak in and override the container's own layout.
+    environment:
+      WATCH_DIRECTORY: /watch
+      STATE_DIR: /state
+      POCKETBASE_URL: http://pocketbase:8090
+      POCKETBASE_COLLECTION_NAME: ${POCKETBASE_COLLECTION_NAME:-auction_items}
+      EVOLINK_API_TOKEN: ${EVOLINK_API_TOKEN:?set EVOLINK_API_TOKEN in .env}
+      EVOLINK_MODEL_NAME: ${EVOLINK_MODEL_NAME:-gemini-3.5-flash-lite}
+      EVOLINK_URL: ${EVOLINK_URL:-}
+      WATCHER_OBSERVER: ${WATCHER_OBSERVER:-auto}
+      WATCHER_POLL_INTERVAL: ${WATCHER_POLL_INTERVAL:-5}
+    volumes:
+      # Read-only: the watcher never modifies the screenshots it ingests.
+      - ${HOST_WATCH_DIR:?set HOST_WATCH_DIR in .env}:/watch:ro
+      - ./state:/state
