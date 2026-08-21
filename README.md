@@ -2,12 +2,25 @@
 
 Automates the flow from screenshot to structured record:
 
-1. Watches a folder for new image files.
-2. Sends each image to EvoLink's Gemini endpoint for extraction.
-3. Saves the extracted data and screenshot to PocketBase.
+1. Watches a folder for new screenshots.
+2. Reads the item number off the filename.
+3. Sends each image to EvoLink's Gemini endpoint for the product name and price.
+4. Saves the extracted data and screenshot to PocketBase.
 
 A Chrome extension captures screenshots from the TikTok Live Manager page into a
 download folder; this service picks them up from there.
+
+## Filenames
+
+The extension names every capture `Part<X>_SKU<Y>_<YYYYMMDD>_<HHMMSS>.png`, e.g.
+`Part1_SKU7_20260717_213256.png`. Part and SKU are read from the Live Manager
+page, which makes the filename the authoritative source for `item_number`
+(`Part 1 Item #7` above) — the model is never asked for it. PNGs that do not
+match the pattern are logged and skipped, since there is no way to key their
+record.
+
+The same pattern appears in `tiktok-order-tracker/screenshots.py`, which
+resolves TikTok orders back to these files. Change one and change the other.
 
 ## Quick start (Docker)
 
@@ -154,7 +167,7 @@ duplicate everything still sitting in the folder.
 The collection is **not** created automatically. On a fresh `pb_data`, bring the
 stack up, open the admin UI, and create a collection named `auction_items` with:
 
-- `item_number` — Text
+- `item_number` — Text, derived from the filename (e.g. `Part 1 Item #7`)
 - `name` — Text
 - `retail_price` — Number
 - `screenshot` — File, single upload

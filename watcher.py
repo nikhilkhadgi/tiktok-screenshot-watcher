@@ -48,7 +48,18 @@ EVOLINK_URL = os.getenv("EVOLINK_URL") or (
 if not EVOLINK_API_TOKEN:
     raise RuntimeError("EVOLINK_API_TOKEN is not set. Export it before running watcher.py.")
 
-IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
+# The Chrome extension names each capture from the Live Manager page itself:
+# Part1_SKU7_20260717_213256.png. Part and SKU are read out of the page, so the
+# filename is authoritative for the item number in a way that reading it back
+# off the pixels is not.
+#
+# Kept identical to the pattern in tiktok-order-tracker/screenshots.py, which
+# resolves TikTok orders to these same files. The two must agree on what counts
+# as a screenshot or an item can be seen by one and not the other.
+SCREENSHOT_NAME_RE = re.compile(
+    r"^Part(?P<part>\d+)_SKU(?P<sku>\d+)_(?P<date>\d{8})_(?P<time>\d{6})\.png$",
+    re.IGNORECASE,
+)
 
 # Filesystem types that cannot deliver inotify events for writes made outside
 # the container: Docker Desktop's older bind-mount transports, network shares,
@@ -64,39 +75,20 @@ EVENTLESS_FILESYSTEMS = {
 }
 
 
-def normalize_item_number(raw_val: str) -> str:
+def parse_item_number(name):
     """
-    Parses and standardizes item numbers into 'Part X Item #Y' format,
-    even if the AI returns them out of order (e.g., '#10 Part 1').
+    Derive 'Part X Item #Y' from a screenshot filename, or None if the name does
+    not follow the convention. int() drops any zero padding so the result is
+    stable regardless of how the extension formats the numbers.
     """
-    if not raw_val:
-        return raw_val
-
-    text = str(raw_val).strip()
-
-    # Extract Part number and Item number using Regex
-    part_match = re.search(r'Part\s*(\d+)', text, re.IGNORECASE)
-    item_match = re.search(r'(?:Item\s*#?|#)\s*(\d+)', text, re.IGNORECASE)
-
-    part_num = part_match.group(1) if part_match else None
-
-    # Avoid capturing part_num twice if regex overlaps
-    if item_match:
-        matched_item = item_match.group(1)
-        item_num = matched_item if matched_item != part_num else None
-    else:
-        item_num = None
-
-    # If both Part and Item were extracted, return standardized syntax
-    if part_num and item_num:
-        return f"Part {part_num} Item #{item_num}"
-
-    # Fallback to cleaned text if regex does not match both fields
-    return text
+    match = SCREENSHOT_NAME_RE.match(os.path.basename(name))
+    if not match:
+        return None
+    return f"Part {int(match.group('part'))} Item #{int(match.group('sku'))}"
 
 
-def is_image(name: str) -> bool:
-    return name.lower().endswith(IMAGE_SUFFIXES)
+def is_screenshot(name):
+    return SCREENSHOT_NAME_RE.match(os.path.basename(name)) is not None
 
 
 def _unescape_mount(path: str) -> str:
@@ -299,9 +291,17 @@ class ScreenshotHandler(FileSystemEventHandler):
             self._maybe_submit(event.dest_path)
 
     def _maybe_submit(self, file_path):
-        if file_path and is_image(file_path):
-            print(f"New screenshot detected: {file_path}")
-            self.submit(file_path)
+        if not file_path or not file_path.lower().endswith(".png"):
+            return
+        # A PNG that lands here with the wrong name carries no item number, so
+        # it is reported rather than dropped silently -- unlike the download
+        # temp files and editor droppings filtered out above.
+        if not is_screenshot(file_path):
+            print(f"Ignoring {os.path.basename(file_path)}: "
+                  "not named Part<X>_SKU<Y>_<date>_<time>.png")
+            return
+        print(f"New screenshot detected: {file_path}")
+        self.submit(file_path)
 
     def submit(self, file_path):
         with self._lock:
@@ -329,6 +329,14 @@ class ScreenshotHandler(FileSystemEventHandler):
         self._queue.put(None)
 
     def ingest(self, file_path):
+        # Resolved first: a name that cannot be parsed has no item number, and
+        # there is no point paying for extraction on a record we cannot key.
+        item_number = parse_item_number(file_path)
+        if item_number is None:
+            print(f"Skipping {os.path.basename(file_path)}: "
+                  "filename does not match Part<X>_SKU<Y>_<date>_<time>.png")
+            return
+
         size = wait_for_stable_size(file_path)
         if size is None:
             print(f"Skipping {file_path}: file disappeared or never settled.")
@@ -339,11 +347,11 @@ class ScreenshotHandler(FileSystemEventHandler):
             return
 
         extracted_data = self.process_image_with_gemini(file_path)
-        print(f"Extracted Data: {extracted_data}")
+        print(f"Extracted Data: {item_number} -> {extracted_data}")
 
         # Only recorded on success, so a transient failure is retried on the
         # next restart rather than being silently dropped.
-        if self.save_to_pocketbase(file_path, extracted_data):
+        if self.save_to_pocketbase(file_path, item_number, extracted_data):
             self.ledger.add(file_path, size)
             self.ledger.maybe_prune(WATCH_DIRECTORY)
 
@@ -355,9 +363,6 @@ class ScreenshotHandler(FileSystemEventHandler):
         prompt_text = (
             "Analyze this screenshot from a live shopping auction.\n"
             "Extract the following fields and return ONLY a valid JSON object with these exact keys:\n"
-            "- 'item_number': The item text formatted strictly as 'Part <X> Item #<Y>'.\n"
-            "  * Example 1: If screenshot shows '#10 Part 1', return 'Part 1 Item #10'.\n"
-            "  * Example 2: If screenshot shows 'Part 2 Item 168', return 'Part 2 Item #168'.\n"
             "- 'name': The clear product name. Validate if the product is real and correct it if necessary.\n"
             "- 'retail_price': Search online to find out the numeric retail price in USD as a float or string (e.g., 29.99)."
         )
@@ -398,19 +403,13 @@ class ScreenshotHandler(FileSystemEventHandler):
 
         # Strip markdown code block formatting if returned by the model
         clean_json = text_content.replace('```json', '').replace('```', '').strip()
-        data = json.loads(clean_json)
+        return json.loads(clean_json)
 
-        # Apply deterministic normalization step
-        if "item_number" in data:
-            data["item_number"] = normalize_item_number(data["item_number"])
-
-        return data
-
-    def save_to_pocketbase(self, file_path, data):
+    def save_to_pocketbase(self, file_path, item_number, data):
         url = f"{POCKETBASE_URL}/api/collections/{COLLECTION_NAME}/records"
 
         payload = {
-            "item_number": data.get("item_number"),
+            "item_number": item_number,
             "name": data.get("name"),
             "retail_price": data.get("retail_price")
         }
@@ -420,7 +419,7 @@ class ScreenshotHandler(FileSystemEventHandler):
             response = requests.post(url, data=payload, files=files)
 
         if response.status_code in [200, 201]:
-            print(f"Successfully saved item {data.get('item_number')} to PocketBase!")
+            print(f"Successfully saved item {item_number} to PocketBase!")
             return True
 
         print(f"Failed to save to PocketBase: {response.text}")
@@ -440,8 +439,12 @@ def scan_existing(handler, ledger, directory):
         return
 
     pending = []
+    ignored = 0
     for name in names:
-        if not is_image(name):
+        if not name.lower().endswith(".png"):
+            continue
+        if not is_screenshot(name):
+            ignored += 1
             continue
         path = os.path.join(directory, name)
         try:
@@ -450,6 +453,9 @@ def scan_existing(handler, ledger, directory):
             continue
         if not ledger.contains(path, size):
             pending.append(path)
+
+    if ignored:
+        print(f"Startup scan: ignored {ignored} PNG(s) not matching the naming convention.")
 
     if not pending:
         print("Startup scan: nothing new.")
