@@ -408,14 +408,22 @@ class ScreenshotHandler(FileSystemEventHandler):
     def save_to_pocketbase(self, file_path, item_number, data):
         url = f"{POCKETBASE_URL}/api/collections/{COLLECTION_NAME}/records"
 
+        # PocketBase rewrites an uploaded file's name -- lowercased, with a
+        # random suffix before the extension -- so the `screenshot` field cannot
+        # be matched against a name on disk. source_file keeps the extension's
+        # name verbatim, which is unique to the second and is the key
+        # tiktok-order-tracker uses to attach an order_id to this record.
+        source_file = os.path.basename(file_path)
+
         payload = {
             "item_number": item_number,
             "name": data.get("name"),
-            "retail_price": data.get("retail_price")
+            "retail_price": data.get("retail_price"),
+            "source_file": source_file,
         }
 
         with open(file_path, "rb") as f:
-            files = {"screenshot": (os.path.basename(file_path), f)}
+            files = {"screenshot": (source_file, f)}
             response = requests.post(url, data=payload, files=files)
 
         if response.status_code in [200, 201]:
