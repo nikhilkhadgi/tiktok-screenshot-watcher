@@ -12,12 +12,23 @@ download folder; this service picks them up from there.
 
 ## Filenames
 
-The extension names every capture `Part<X>_SKU<Y>_<YYYYMMDD>_<HHMMSS>.png`, e.g.
-`Part1_SKU7_20260717_213256.png`. Part and SKU are read from the Live Manager
-page, which makes the filename the authoritative source for `item_number`
-(`Part 1 Item #7` above) — the model is never asked for it. PNGs that do not
-match the pattern are logged and skipped, since there is no way to key their
-record.
+The extension names every capture `Part<X>_SKU<Y>_<YYYYMMDD>_<HHMMSS>.<ext>`,
+e.g. `Part1_SKU7_20260717_213256.webp`. Part and SKU are read from the Live
+Manager page, which makes the filename the authoritative source for
+`item_number` (`Part 1 Item #7` above) — the model is never asked for it.
+Images that do not match the pattern are logged and skipped, since there is no
+way to key their record.
+
+**Both `.png` and `.webp` are accepted.** The extension switched to WebP q0.90
+in v2.3 (a labelled PNG frame ran 2.4–3.7 MB against roughly 400 KB for WebP),
+but every screenshot captured before that is a PNG and stays readable. Do not
+narrow this to one extension — an unrecognised suffix is rejected in
+`_maybe_submit` *before* the "wrong name" log line, so a whole show would
+disappear with no log output at all.
+
+The timestamp is UTC, written by the extension with `getUTC*`. Nothing here
+reads it — only the Part and SKU groups are used — so the watcher has no
+timezone dependency and `TZ` can be set to anything.
 
 The same pattern appears in `tiktok-order-tracker/screenshots.py`, which
 resolves TikTok orders back to these files. Change one and change the other.
@@ -171,8 +182,25 @@ stack up, open the admin UI, and create a collection named `auction_items` with:
 - `name` — Text
 - `retail_price` — Number
 - `screenshot` — File, single upload
+- `source_file` — Text, the filename verbatim
+- `order_id` — **Text**, filled later by `tiktok-order-tracker`
 
-The script creates records without authenticating, so leave the create rule empty.
+`order_id` must be Text, not Number. TikTok order IDs are 18–19 digits, and a
+PocketBase number is a float64 — anything past ~16 digits silently rounds, so
+`577535499565437047` would be stored as `…785280`.
+
+`source_file` exists because the `screenshot` field cannot be matched against a
+name on disk: PocketBase rewrites uploads, lowercasing and appending a random
+suffix, so `Part1_SKU7_….webp` becomes `part1_sku7_…_72thx4su8h.webp`. The
+order tracker joins on `source_file`, so an empty one means that record can
+never receive an `order_id`.
+
+Worth adding indexes on `source_file` (queried on every backfill, 1200–2000 per
+show) and `order_id` (queried when tracing a customer's order).
+
+The script creates records without authenticating, so leave the create rule
+empty. Leave `list`, `view` and `update` locked to superusers — the tracker
+authenticates as one to read a record back and patch it.
 
 Until the collection exists, every ingest fails with a 404 from PocketBase. The
 watcher keeps running and does not record those files in its ledger, so they are
