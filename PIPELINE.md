@@ -511,16 +511,27 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=America/Chicago
 
-30 9 * * * cd /path/to/tiktok-order-tracker && \
+0 6 * * * cd /path/to/tiktok-order-tracker && \
   flock -n /tmp/nightly.lock make nightly >> logs/nightly-$(date +\%Y\%m).log 2>&1
 ```
 
+**06:00 Central**, chosen against measured data: across all 10 shows in the
+database the latest any has ever ended is **02:26 CT**, so this leaves ~3.5
+hours. The margin matters because the manifest step *moves* screenshots out of
+the watch folder — anything the watcher has not ingested by then is archived
+before it is seen, never reaches PocketBase, and nothing reports it. Re-measure
+if the show schedule changes.
+
 The three environment lines are not decoration. `PATH` because cron's
 environment omits `docker` and `make`; `CRON_TZ` because the VPS is UTC and a
-bare `30 9` would fire at 04:30 Central; `flock` because a hand-run overlapping
-the cron would have two processes refreshing the TikTok token at once, and
-`auth.py:_save()` is an unlocked `write_text()` — a torn write there costs a
-browser re-auth a headless VPS cannot perform.
+bare `0 6` would otherwise fire at 01:00 Central, **mid-show**; `flock` because
+a hand-run overlapping the cron would have two processes refreshing the TikTok
+token at once, and `auth.py:_save()` is an unlocked `write_text()` — a torn
+write there costs a browser re-auth a headless VPS cannot perform.
+
+`CRON_TZ` is a recent addition to Debian/Ubuntu cron; confirm it is honoured
+(`man 5 crontab | grep -i CRON_TZ`) or the job runs mid-show rather than merely
+early.
 
 Full walkthrough, including a test that runs under `env -i` so PATH problems
 surface immediately, is in **`CRON_SETUP.txt`** in the watcher repo.
