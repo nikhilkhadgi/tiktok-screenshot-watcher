@@ -8,6 +8,12 @@ own. Read it before changing anything that crosses a boundary — the filename
 convention in particular is a contract between all three, and each repo looks
 self-contained enough that you can break the others without noticing.
 
+Companion documents in this repo:
+
+- **`DEPLOY_STEPS.txt`** — deployment order and the one-off migrations
+- **`CRON_SETUP.txt`** — the nightly job, why each line of it exists, and how
+  to read its output
+
 Last updated 2026-08-22.
 
 ---
@@ -83,7 +89,7 @@ Branches, as of this writing:
         retail_price 28
         screenshot   <file>
         source_file  "Part1_SKU197_20260822_005141.webp"  ← the join key
-        order_id     ""                                    ← filled later
+        order_id     "577535499565437047"                  ← filled nightly
         ▲
         │ PATCH order_id
   ┌─────────────────────────────────────────────┐
@@ -412,16 +418,44 @@ make fill-orders ARGS="--since 1"
 ```
 
 - `--date` is a **show date** in `SHOW_TZ`, matching `make run`
-- `--since N` is relative to "today" in `SHOW_TZ` — so at 22:00 CDT on the 21st,
-  `--since 1` means the **20th**, not that evening's show. Run it the following
-  morning, as the cron does
+- `--since N` is a **range** — the last N days. It is relative to "today" in
+  `SHOW_TZ`, so at 22:00 CDT on the 21st `--since 1` means the **20th**, not
+  that evening's show. Run it the following morning, as the cron does
 - `--dry-run` uses the identical code path; only the final PATCH is skipped
 - Re-running is safe — already-correct rows are reported and left alone
-- **Exits 1 if any gap is found**, so cron can alert
 
-Report lines beginning `!` are gaps: no screenshots indexed for a date, no
-screenshot found for an order, no Part/SKU in a line item, two orders claiming
-one capture, a screenshot with no PocketBase row, or a row with no order.
+> Note `main.py` uses **`--days-ago N`** for the same idea, deliberately not
+> `--since`. There it means one specific date, not a range. The two are invoked
+> from the same cron line, and one word with two meanings across adjacent tools
+> is a trap that only surfaces when someone reaches for N > 1.
+
+#### Exit code: failure, not gaps
+
+Lines beginning `!` are things the run could not resolve. Most are routine and
+**do not** affect the exit code. The `±6h` over-fetch always drags a
+neighbouring show's rows into the PocketBase query without their orders being
+fetched, so `no_order` is large on every single run — 896 on a night that
+filled 1995 perfectly.
+
+Exit 1 is reserved for the run not doing its job:
+
+| Condition | Means |
+|---|---|
+| No order line items fetched at all | Auth or API broken, or genuinely no show |
+| Orders fetched, **none** resolved to a screenshot | Broken index or broken match — a real show resolves essentially all |
+| Screenshots resolved, PocketBase returned **no rows** | `source_file` not populated; matching perfect, nothing accomplished |
+| A record already holds a **different** order id | A contradiction; one value is wrong and nothing can say which |
+
+Every run ends with a fixed-shape line for log greps:
+
+```
+SUMMARY filled=1995 already=0 orders=1995 resolved=1995 rows=2891 \
+        no_order=896 no_row=0 status=ok
+```
+
+`no_order` being large is normal. **`no_row` is the one worth investigating** —
+a screenshot matched an order but no record carries that `source_file`, meaning
+the watcher never ingested that capture.
 
 ---
 
@@ -444,8 +478,17 @@ because the create rule is unauthenticated.
 make build                        # rebuild after pulling
 make run                          # interactive manifest (PDF/HTML)
 make fill-orders ARGS="…"         # order-ID backfill
+make nightly                      # unattended: manifest, then order IDs
 make serve                        # nginx + file server for browsing manifests
 ```
+
+`make build` **must** carry `--profile tools` or the `fill-orders` image is
+never rebuilt — see trap 10.
+
+`main.py` prompts for date, format and layout only when given no arguments.
+`--date` or `--days-ago` suppresses every prompt, which is what makes `nightly`
+schedulable: a cron job blocked on `input()` is indistinguishable from one that
+hung.
 
 `fill-orders` attaches to the watcher's Docker network
 (`tiktok-screenshot-watcher_default`, declared `external`) and reaches
@@ -464,9 +507,24 @@ and `TIKTOK_TOKEN_DIR=tokens`.
 ### Cron
 
 ```cron
-30 9 * * *  cd /path/to/tiktok-order-tracker && \
-            make fill-orders ARGS="--since 1" >> logs/fill.log 2>&1
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=America/Chicago
+
+30 9 * * * cd /path/to/tiktok-order-tracker && \
+  flock -n /tmp/nightly.lock make nightly >> logs/nightly-$(date +\%Y\%m).log 2>&1
 ```
+
+The three environment lines are not decoration. `PATH` because cron's
+environment omits `docker` and `make`; `CRON_TZ` because the VPS is UTC and a
+bare `30 9` would fire at 04:30 Central; `flock` because a hand-run overlapping
+the cron would have two processes refreshing the TikTok token at once, and
+`auth.py:_save()` is an unlocked `write_text()` — a torn write there costs a
+browser re-auth a headless VPS cannot perform.
+
+Full walkthrough, including a test that runs under `env -i` so PATH problems
+surface immediately, is in **`CRON_SETUP.txt`** in the watcher repo.
+Deployment order and one-off migration steps are in **`DEPLOY_STEPS.txt`**.
 
 `--since 3` re-checks earlier days and costs only API calls, since filled rows
 are skipped. Useful for closing gaps left by a failed run.
@@ -493,10 +551,25 @@ Ordered roughly by how much damage they cause.
    recovery was deleting the token file and re-authorizing by browser every 7
    days. Fixed in `auth.py` via `_expiry_to_timestamp` and
    `_repair_legacy_expiries`.
-6. **`docker compose run` needs `--profile tools`** for `fill-orders`. Without
-   it the service starts with an incomplete config and the `.env` credentials
-   never arrive — surfacing as "missing TIKTOK_APP_KEY", which looks like a
-   broken `.env`. The Make target includes the flag.
+6. **The `tools` profile changes behaviour twice, and both failures point
+   somewhere else.** `fill-orders` sits behind it, and Docker Compose treats
+   profiled services as absent unless the flag is passed:
+
+   - **`docker compose run` without it** starts the service with an incomplete
+     config, so the `.env` credentials never arrive. Surfaces as "missing
+     TIKTOK_APP_KEY" — looks like a broken `.env`.
+   - **`docker compose build` without it** skips the service entirely. Since
+     each `build: .` service gets its own image, building `manifest` does not
+     build `fill-orders`; its image stays whatever compose auto-built the
+     first time it ran, and files added to the repo since are simply absent:
+
+         python: can't open file '/app/backfill_source_file.py'
+
+     after a pull that plainly contains the file. Looks like a failed pull.
+
+   Both Make targets now carry the flag. The profile is still worth keeping —
+   it stops `docker compose up` launching a one-shot job — but it is a sharper
+   edge than it looks.
 7. **Two capture machines writing to one folder** produce two rows per item and
    double the Gemini spend, and only one of each pair gets an `order_id` — so
    the gap report fills with false positives. Fix is settings-only: set the
@@ -507,12 +580,18 @@ Ordered roughly by how much damage they cause.
    pagination ever ends early, the shortfall is invisible and surfaces as "no
    screenshot found" — blaming the wrong subsystem. Reconciles cleanly in
    testing; worth adding a check before running unattended.
-9. **Do not narrow the filename pattern to one image format.** The watcher's
+9. **PocketBase fails in opposite directions on read and write.** POSTing an
+   unknown field returns **HTTP 200 and silently discards it**; *filtering* on
+   an unknown field returns **HTTP 400**. So a missing column is invisible
+   during ingest and loud during backfill. This is why `source_file` had to
+   exist on the collection before the new watcher ran — otherwise a whole
+   show's records are created looking fine, with the join key quietly absent.
+10. **Do not narrow the filename pattern to one image format.** The watcher's
    `_maybe_submit` returns *before* its "wrong name" log line when the suffix
    does not match, so an unrecognised extension makes a whole show vanish with
    **no log output at all** — an idle-looking watcher and an empty database.
    This is why both `png` and `webp` are accepted.
-10. **The token cache `_save()` is not atomic** (plain `write_text`, no lock).
+11. **The token cache `_save()` is not atomic** (plain `write_text`, no lock).
    Host and container share `./tokens`, so a concurrent refresh could corrupt
    it. Narrow window; the watcher's `ProcessedLedger._flush()` shows the
    temp-file-and-rename pattern to copy.
@@ -529,6 +608,14 @@ Ordered roughly by how much damage they cause.
 - **2026-06-14 has 14 missing items** in Part 1. All were 12–27 seconds per
   missing item, i.e. the video-sync/logout failure, not a capture-timer drop.
 - **06-19 and 06-20 have zero missing items** across 849 consecutive captures.
+- **2026-08-22: `source_file` added and backfilled.** The field did not exist
+  on production until then, so all 9,242 existing records had no join key —
+  `fill_order_ids` matched 1995/1995 screenshots and filled nothing. A one-off
+  script reconstructed the name from the stored `screenshot` value (see §4) and
+  populated **9,176** of them; the remaining **66** are 2026-08-14 records
+  whose screenshots are gone from disk and can never be matched. Some of those
+  66 also have an empty `item_number`, from when it came from the model rather
+  than the filename. 1,995 order IDs were filled the same day.
 - **Extension v2.3 switched PNG → WebP q0.90.** v2 was producing 2.4–3.7 MB
   frames where v1 produced 300–500 KB; the label burned onto the frame made PNG
   compress poorly. Everything captured before v2.3 is PNG.
@@ -552,8 +639,18 @@ Ordered roughly by how much damage they cause.
    consumes S3. Preference is settings-only (separate prefixes, standby machine
    on `destination: s3`) over dedup code, because dedup would require giving
    the watcher superuser read access it does not currently need.
-5. **Indexes** on `auction_items.source_file` and `order_id`.
-6. **`total_count` reconciliation** in `_iter_window` (trap 8).
+5. **Indexes** on `auction_items.source_file` and `order_id`. Not yet added,
+   and `source_file` is now queried on every backfill run.
+6. **`total_count` reconciliation** in `_iter_window` (trap 8). Reconciled
+   cleanly whenever measured; the anomaly that prompted it turned out to be
+   ordinary growth during a live show.
+7. **Delete `backfill_source_file.py`** once its run is confirmed good. It is
+   marked one-off in its own commit message; the condition it fixes cannot
+   recur now that the watcher always writes the field.
+8. **Nothing alerts on a failed nightly run.** Cron only emails on a non-zero
+   exit if `MAILTO` and a mail transport are configured, which they are not.
+   The `SUMMARY` line exists to be scraped by something; nothing scrapes it
+   yet.
 
 ---
 
