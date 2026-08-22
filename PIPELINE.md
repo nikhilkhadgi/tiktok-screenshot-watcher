@@ -140,6 +140,21 @@ uploaded filenames — lowercased with a random suffix. `Part1_SKU197_…png`
 becomes `part1_sku197_…_72thx4su8h.png`. It cannot be matched against a name
 on disk.
 
+It is, however, **reversible**. The rewrite only lowercases and inserts a
+random 10-character token before the extension, so part, SKU, date and time all
+survive and the record can be tied back to the exact file it came from:
+
+```
+part1_sku1000_20260822_065312_k1a4d1iol8.png
+     ^1   ^1000  ^20260822 ^065312        ^token
+```
+
+That is how `source_file` was backfilled onto records predating the field.
+Resolve `(part, sku, timestamp)` against the screenshot index and copy the real
+name off disk rather than rebuilding it from the pieces — a guess with the
+wrong casing or padding writes a value that silently never joins, and later
+looks identical to a screenshot that was never captured.
+
 ---
 
 ## 5. The two-clock rule
