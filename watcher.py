@@ -49,17 +49,36 @@ if not EVOLINK_API_TOKEN:
     raise RuntimeError("EVOLINK_API_TOKEN is not set. Export it before running watcher.py.")
 
 # The Chrome extension names each capture from the Live Manager page itself:
-# Part1_SKU7_20260717_213256.png. Part and SKU are read out of the page, so the
+# Part1_SKU7_20260717_213256.webp. Part and SKU are read out of the page, so the
 # filename is authoritative for the item number in a way that reading it back
 # off the pixels is not.
+#
+# Both encodings are accepted. The extension moved from PNG to WebP in v2.3
+# (a PNG frame ran 2.4-3.7MB against roughly 400KB for WebP q0.90), but every
+# screenshot captured before that is a PNG and must stay readable -- dropping
+# it would make the whole existing archive invisible.
 #
 # Kept identical to the pattern in tiktok-order-tracker/screenshots.py, which
 # resolves TikTok orders to these same files. The two must agree on what counts
 # as a screenshot or an item can be seen by one and not the other.
 SCREENSHOT_NAME_RE = re.compile(
-    r"^Part(?P<part>\d+)_SKU(?P<sku>\d+)_(?P<date>\d{8})_(?P<time>\d{6})\.png$",
+    r"^Part(?P<part>\d+)_SKU(?P<sku>\d+)_(?P<date>\d{8})_(?P<time>\d{6})"
+    r"\.(?P<ext>png|webp)$",
     re.IGNORECASE,
 )
+
+IMAGE_EXTENSIONS = (".png", ".webp")
+
+# Sent to the model alongside the image bytes. The endpoint was measured to
+# sniff the real format regardless of what it is told, but labelling it
+# correctly costs nothing and stops a future stricter endpoint from failing
+# in a way that would look like an extraction bug.
+MIME_TYPES = {".png": "image/png", ".webp": "image/webp"}
+
+
+def image_mime_type(path):
+    """Content type for a screenshot, defaulting to PNG for unknown suffixes."""
+    return MIME_TYPES.get(os.path.splitext(path)[1].lower(), "image/png")
 
 # Filesystem types that cannot deliver inotify events for writes made outside
 # the container: Docker Desktop's older bind-mount transports, network shares,
@@ -291,14 +310,14 @@ class ScreenshotHandler(FileSystemEventHandler):
             self._maybe_submit(event.dest_path)
 
     def _maybe_submit(self, file_path):
-        if not file_path or not file_path.lower().endswith(".png"):
+        if not file_path or not file_path.lower().endswith(IMAGE_EXTENSIONS):
             return
-        # A PNG that lands here with the wrong name carries no item number, so
-        # it is reported rather than dropped silently -- unlike the download
+        # An image that lands here with the wrong name carries no item number,
+        # so it is reported rather than dropped silently -- unlike the download
         # temp files and editor droppings filtered out above.
         if not is_screenshot(file_path):
             print(f"Ignoring {os.path.basename(file_path)}: "
-                  "not named Part<X>_SKU<Y>_<date>_<time>.png")
+                  "not named Part<X>_SKU<Y>_<date>_<time>.(png|webp)")
             return
         print(f"New screenshot detected: {file_path}")
         self.submit(file_path)
@@ -334,7 +353,7 @@ class ScreenshotHandler(FileSystemEventHandler):
         item_number = parse_item_number(file_path)
         if item_number is None:
             print(f"Skipping {os.path.basename(file_path)}: "
-                  "filename does not match Part<X>_SKU<Y>_<date>_<time>.png")
+                  "filename does not match Part<X>_SKU<Y>_<date>_<time>.(png|webp)")
             return
 
         size = wait_for_stable_size(file_path)
@@ -375,7 +394,7 @@ class ScreenshotHandler(FileSystemEventHandler):
                         {"text": prompt_text},
                         {
                             "inline_data": {
-                                "mime_type": "image/png",
+                                "mime_type": image_mime_type(image_path),
                                 "data": encoded_image
                             }
                         }
@@ -449,7 +468,7 @@ def scan_existing(handler, ledger, directory):
     pending = []
     ignored = 0
     for name in names:
-        if not name.lower().endswith(".png"):
+        if not name.lower().endswith(IMAGE_EXTENSIONS):
             continue
         if not is_screenshot(name):
             ignored += 1
@@ -463,7 +482,7 @@ def scan_existing(handler, ledger, directory):
             pending.append(path)
 
     if ignored:
-        print(f"Startup scan: ignored {ignored} PNG(s) not matching the naming convention.")
+        print(f"Startup scan: ignored {ignored} image(s) not matching the naming convention.")
 
     if not pending:
         print("Startup scan: nothing new.")
