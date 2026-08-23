@@ -122,7 +122,7 @@ photos from every historical manifest. Do not "tidy" this to one extension.
 
 This one string is the join key for the entire system. It is:
 
-- the **S3 object key** (grouped by date: `tiktok-live/20260822/…`)
+- the **S3 object key**, flat under one prefix: `tiktok-live/Part1_SKU197_20260822_005141.webp`
 - **`auction_items.source_file`** in PocketBase, stored verbatim
 - what **`lookup_screenshot`** resolves a TikTok order to
 
@@ -170,7 +170,7 @@ clocks and they must not be confused.
 
 | | Zone | Applies to |
 |---|---|---|
-| **Matching** | **UTC** | Screenshot filenames, S3 prefixes, `source_file`, TikTok `create_time`, every comparison in `screenshots.py` and `fill_order_ids.py` |
+| **Matching** | **UTC** | Screenshot filenames, S3 keys, `source_file`, TikTok `create_time`, every comparison in `screenshots.py` and `fill_order_ids.py` |
 | **People** | **`SHOW_TZ`** (`America/Chicago`) | The date you type on the CLI, session times, order times, manifest headings |
 
 `SHOW_TZ` is defined **once**, in the tracker's `config.py`. It previously
@@ -186,12 +186,21 @@ A Texas evening falls on the **next UTC day** — 19:00 CDT is 00:00 UTC. So the
 21 August show has:
 
 - screenshots named `20260822_*`
-- S3 prefix `tiktok-live/20260822/`
+- S3 keys `tiktok-live/Part1_SKU…_20260822_*.webp`
 - but you still ask for it as `--date 2026-08-21`, and the manifest prints
   `2026-08-21`
 
 That is intentional, not a bug. A show also lands almost wholly inside one UTC
-day, which is why UTC filenames keep a show in a single S3 prefix.
+day, so selecting one show is a filter on the date inside the filename.
+
+S3 keys are **flat** under a single prefix — the date-grouped layout was removed
+in extension commit `059acb8`. Nothing can therefore ask S3 for one show's
+objects: filenames sort by Part and SKU as strings, so lexicographic order does
+not track time and `StartAfter` cannot narrow the range. A consumer lists the
+whole prefix and filters client-side on the filename date. That is bounded by
+the bucket's one-year lifecycle rather than growing forever — roughly 240
+`ListObjectsV2` pages at steady state, a few seconds per run. The lifecycle
+policy is what caps listing cost, not only the storage bill.
 
 ### Why UTC in the filename rather than local
 
@@ -638,7 +647,10 @@ Ordered roughly by how much damage they cause.
 1. **Watcher reads S3** instead of the local folder. This is the main remaining
    piece. S3 has no inotify, so `watchdog` becomes prefix polling or bucket
    notifications. `ProcessedLedger` ports cleanly — it keys on basename+size,
-   both of which `ListObjectsV2` returns per object.
+   both of which `ListObjectsV2` returns per object. Note `prune_missing`
+   does **not** port: its premise is that a filename gone from disk can never
+   be scanned again, which S3 makes false. Left as-is, an archived file would
+   be re-downloaded and re-ingested as new.
 2. **`fill_order_ids` needs an S3-aware screenshot index**, since
    `scan_screenshots` currently walks a local directory.
 3. **Capture migration to the Texas warehouse machine.** The VPS browser loses
